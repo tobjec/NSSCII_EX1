@@ -4,4 +4,5 @@ First group homework of the lecture 360.243 Numerical Simulation and Scientific 
 
 Lecture notes:
 
-* 
+* first do 1D decomposition and only after working example implement 2D decomposition
+* make use of the proper MPI functions for 2D to make code simpler
