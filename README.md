@@ -1,6 +1,8 @@
 # NSSCII_EX1
 First group homework of the lecture 360.243 Numerical Simulation and Scientific Computing II (VU 3,0) 2024S
 
+Link to LaTeX template for task reports:
+https://www.overleaf.com/6217539947gjpfdrqgnncz#a5cfc3
 
 Lecture notes:
 
