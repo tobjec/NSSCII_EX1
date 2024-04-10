@@ -6,7 +6,7 @@ load:
 	source /etc/profile.d/modules.sh && module load mpi/openmpi-x86_64
 
 run:
-	mpirun -n 8 ./jacobi.o result 80 10000 -100 100
+	mpirun -n $(filter-out $@,$(MAKECMDGOALS)) ./jacobi.o result 80 10000 -100 100
 
 plot:
 	python3 plot.py
