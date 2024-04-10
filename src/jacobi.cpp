@@ -12,6 +12,8 @@
 #include <vector>
 #include <chrono>
 #include <algorithm>
+#include <array>
+#include <sstream>
 
 #include <mpi.h>
 
@@ -73,16 +75,6 @@ auto parse(int argc, char *argv[]) {
 }
 
 } // namespace program_options
-
-struct Index_2D {
-  constexpr Index_2D(std::size_t N) : N{N}, h{1. / (N - 1.)} {}
-  constexpr std::size_t operator()(std::size_t i, std::size_t j) const { return j * N + i; }
-  constexpr double x(std::size_t i) const { return i * h; }
-  constexpr double y(std::size_t j) const { return j * h; }
-  const std::size_t N;
-  const double h;
-};
-
 double norm_2(const std::vector<double>& v) {
   auto sum = 0.;
   for (auto x : v) {
@@ -110,103 +102,53 @@ std::vector<double> sub(const std::vector<double>& a, const std::vector<double>&
   return result;
 }
 
-auto run(program_options::Options opt, int& processes, std::vector<int> coords, MPI_Comm& comm) {
-  const auto i2d = Index_2D{opt.N};
-
-  const auto grid_size = i2d.N * i2d.N;
-  std::vector<double> u_h_in(grid_size), u_h_out(grid_size), b_h(grid_size);
-
-  std::fill(b_h.begin(), b_h.end(), 0.);
-
-  //BEGIN solve section
-  // use zero-vector as initial solution
-  std::fill(u_h_in.begin(), u_h_in.end(), 0.);
-
-  for (auto iter = 0; iter < opt.iters; ++iter) {
-    // Jacobi iteration
-    for (auto i = 0; i < i2d.N; ++i) {
-      for (auto j = 0; j < i2d.N; ++j) {
-        const auto u_C =                 u_h_in[i2d(i    , j    )];
-        const auto u_W = i > 0         ? u_h_in[i2d(i - 1, j    )] : opt.fix_west;
-        const auto u_E = i < i2d.N - 1 ? u_h_in[i2d(i + 1, j    )] : opt.fix_east;
-        const auto u_S = j > 0         ? u_h_in[i2d(i    , j - 1)] : u_C;
-        const auto u_N = j < i2d.N - 1 ? u_h_in[i2d(i    , j + 1)] : u_C;
-        u_h_out[i2d(i, j)] = i2d.h * i2d.h / 4. * (b_h[i2d(i, j)] + 1. / i2d.h / i2d.h * (u_W + u_E + u_S + u_N));
-      }
-    }
-
-    // The next iteration's input is the current iteration's output
-    std::swap(u_h_in, u_h_out);
-  }
-  //END solve section
-
-  std::vector<double> b_h_ref(grid_size);
-  // Recompute
-  // compute A_h * u_h = b_h with A_h given implicitly by the stencil and boundary conditions
-  for (auto i = 0; i < i2d.N; ++i) {
-    for (auto j = 0; j < i2d.N; ++j) {
-      const auto u_C =                 u_h_out[i2d(i    , j    )];
-      const auto u_W = i > 0         ? u_h_out[i2d(i - 1, j    )] : opt.fix_west;
-      const auto u_E = i < i2d.N - 1 ? u_h_out[i2d(i + 1, j    )] : opt.fix_east;
-      const auto u_S = j > 0         ? u_h_out[i2d(i    , j - 1)] : u_C;
-      const auto u_N = j < i2d.N - 1 ? u_h_out[i2d(i    , j + 1)] : u_C;
-
-      b_h_ref[i2d(i, j)] = -1. / i2d.h / i2d.h * (u_W + u_E + u_S + u_N - 4 * u_C);
-    }
-  }
-
-  const auto diff = sub(b_h, b_h_ref);
-
-  return std::vector<std::vector<double>>{u_h_out, diff};
-}
-
-auto write(const std::vector<double>& solution, size_t& N, std::string& name) {
+auto write(const std::vector<double>& u_h_out, size_t& N, size_t start, size_t end, std::string name) {
   std::ofstream csv;
   csv.open(name + ".csv");
-  for (size_t j = 0; j < N; ++j) {
-    for (size_t i = 0; i < N - 1; ++i) {
-      csv << solution[i + j * N] << " ";
-    }
-    csv << solution[(N - 1) + j * N];
-    csv << "\n";
+  for (size_t i = start; i < end; ++i) {
+    if (i != start && i % N == 0) csv << "\n";
+    csv << std::format("{:08.4f}", u_h_out[i]);
+    if (i % N != N-1) csv << " ";
   }
+  csv << "\n";
   csv.close();
 }
 
 int main(int argc, char *argv[]) try {
-  constexpr int N = 1; // dimensions
-    // first thing to do in an MPI program
+  // first thing to do in an MPI program
   MPI_Init(&argc, &argv);
   // obtain own global rank
   int rank;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
   // obtain number of global MPI processes
   int processes;
   MPI_Comm_size(MPI_COMM_WORLD, &processes);
+
   // letting MPI find a proper select of the dimensions (obsolete for one-dimension)
-  std::vector<int> dims(N);
+  constexpr int n = 1; // dimensions
+  std::vector<int> dims(n);
   std::fill(dims.begin(), dims.end(), 0);
-  MPI_Dims_create(processes, N, std::data(dims));
+  MPI_Dims_create(processes, n, std::data(dims));
 
   // create a communicator for a Nth D topology (with potential reordering of ranks)
   MPI_Comm comm;
-  std::vector<int> periodic(N);
+  std::vector<int> periodic(n);
   std::fill(periodic.begin(), periodic.end(), false);
-  int reorder = true;
-  MPI_Cart_create(MPI_COMM_WORLD, N, std::data(dims), std::data(periodic), reorder, &comm);
+  MPI_Cart_create(MPI_COMM_WORLD, n, std::data(dims), std::data(periodic), true, &comm);
 
   // obtain and store neighboring ranks in the 2D topology (left/right)
   constexpr int displ = 1;
   enum Direction : int { LEFT = 0, RIGHT = 1, TOP = 2, BOTTOM = 3 };
-  std::vector<int> neighbours(N*2);
+  std::vector<int> neighbours(n*2);
   std::fill(neighbours.begin(), neighbours.end(), MPI_PROC_NULL);
-  MPI_Cart_shift(comm, 0, displ, &neighbours[BOTTOM], &neighbours[TOP]);
-  MPI_Cart_shift(comm, 1, displ, &neighbours[LEFT], &neighbours[RIGHT]);
+  MPI_Cart_shift(comm, 0, displ, &neighbours[TOP], &neighbours[BOTTOM]);
+  //MPI_Cart_shift(comm, 1, displ, &neighbours[LEFT], &neighbours[RIGHT]);
   
   // obtain own coordinates
-  std::vector<int> coords(N);
+  std::vector<int> coords(n);
   std::fill(coords.begin(), coords.end(), -1);
-  MPI_Cart_coords(comm, rank, N, std::data(coords));
+  MPI_Cart_coords(comm, rank, n, std::data(coords));
 
   // parse cmd options
   auto opts = program_options::parse(argc, argv);
@@ -214,20 +156,90 @@ int main(int argc, char *argv[]) try {
   // start clock
   const auto start = std::chrono::high_resolution_clock::now();
 
-  // calculate solution
-  const auto solution = run(opts, processes, coords, comm);
+  // HORIZONTAL DECOMPOSITION
+  // lets ignore floats for now. thus grid size divided by number of MPI processes must be an integer
+  size_t slice = opts.N / processes + 2; // +2 for ghost layers
 
-  // write solution to csv file
-  write(solution[0], opts.N, opts.name);
+
+  const auto grid_size = opts.N * slice;
+  std::vector<double> u_h_in(grid_size), u_h_out(grid_size), b_h(grid_size), b_h_ref(grid_size);
+
+  std::fill(b_h.begin(), b_h.end(), 0.);
+
+  //BEGIN solve section
+  // use zero-vector as initial solution
+  std::fill(u_h_in.begin(), u_h_in.end(), 0.);
+
+  // register MPI data types (here vectors) to send a row or a column
+  MPI_Datatype row;
+  MPI_Type_vector(opts.N, 1, 1, MPI_DOUBLE, &row);
+  MPI_Type_commit(&row);
+  MPI_Datatype col;
+  MPI_Type_vector(opts.N, 1, opts.N, MPI_DOUBLE, &col);
+  MPI_Type_commit(&col);
+  
+  // send own middle column to both neighbors
+  // recieve a column from left/right neighbor and store as right/left column
+  enum Request : int { TOP_SEND = 0, BOTTOM_SEND = 1, TOP_RECV = 2, BOTTOM_RECV = 3 };//, LEFT_SEND = 4, LEFT_RECV = 5, RIGHT_SEND = 6, RIGHT_RECV = 7 };
+  enum Tag : int { TOP_tag = 0, BOTTOM_tag = 1 };//, LEFT_tag = 2, RIGHT_tag = 3 };
+  std::vector<MPI_Request> req(n * 2 * 2);
+  //std::fill(req.begin(), req.end(), MPI_REQUEST_NULL);
+
+  // Jacobi iteration
+  for (auto iter = 0; iter < opts.iters; ++iter) {
+    //for (auto i = coords[1] * vertical_size; i < (coords[1] + 1) * vertical_size; ++i) {
+    for (auto i = 0; i < opts.N; ++i) {
+      for (auto j = 0; j < slice; ++j) { // first and last row are ghost layers
+        const auto u_C =                  u_h_in[j       * opts.N + i      ];
+        const auto u_W = i > 0          ? u_h_in[j       * opts.N + (i - 1)] : opts.fix_west;
+        const auto u_E = i < opts.N - 1 ? u_h_in[j       * opts.N + (i + 1)] : opts.fix_east;
+        const auto u_S = j > 0          ? u_h_in[(j - 1) * opts.N + i      ] : coords[0] == 0             ? u_C : u_h_in[(j - 1) * opts.N + i];
+        const auto u_N = j < slice - 1  ? u_h_in[(j + 1) * opts.N + i      ] : coords[0] == processes - 1 ? u_C : u_h_in[(j + 1) * opts.N + i];
+        u_h_out[j * opts.N + i] = (1. / (opts.N - 1.)) * (1. / (opts.N - 1.)) / 4. * (b_h[j * opts.N + i] + 1. / (1. / (opts.N - 1.)) / (1. / (opts.N - 1.)) * (u_W + u_E + u_S + u_N));
+      }
+
+      MPI_Isend(&u_h_out[opts.N], 1, row, neighbours[TOP], TOP_tag, comm, &req[TOP_SEND]);
+      MPI_Isend(&u_h_out[opts.N*(slice-2)], 1, row, neighbours[BOTTOM], BOTTOM_tag, comm, &req[BOTTOM_SEND]);
+      MPI_Irecv(&u_h_out[opts.N*(slice-1)], 1, row, neighbours[BOTTOM], TOP_tag,    comm, &req[TOP_RECV]);
+      MPI_Irecv(&u_h_out[0],    1, row, neighbours[TOP],    BOTTOM_tag, comm, &req[BOTTOM_RECV]);
+
+      // wait/block for/until all four communication calls to finish
+      MPI_Waitall(n * 2 * 2, std::data(req), MPI_STATUSES_IGNORE);
+    }
+
+    // The next iteration's input is the current iteration's output
+    std::swap(u_h_in, u_h_out);
+  }
+  //END solve section
+
+  // Recompute
+  // compute A_h * u_h = b_h with A_h given implicitly by the stencil and boundary conditions
+  //for (auto i = coords[1] * vertical_size; i < (coords[1] + 1) * vertical_size; ++i) {
+  for (auto i = 0; i < opts.N; ++i) {
+    for (auto j = 0; j < slice; ++j) { // first and last row are ghost layers
+      const auto u_C =                  u_h_out[j       * opts.N + i      ];
+      const auto u_W = i > 0          ? u_h_out[j       * opts.N + (i - 1)] : opts.fix_west;
+      const auto u_E = i < opts.N - 1 ? u_h_out[j       * opts.N + (i + 1)] : opts.fix_east;
+      const auto u_S = j > 0          ? u_h_out[(j - 1) * opts.N + i      ] : coords[0] == 0             ? u_C : u_h_out[(j - 1) * opts.N + i];
+      const auto u_N = j < slice - 1  ? u_h_out[(j + 1) * opts.N + i      ] : coords[0] == processes - 1 ? u_C : u_h_out[(j + 1) * opts.N + i];
+
+      b_h_ref[j * opts.N + i] = -1. / (1. / (opts.N - 1.)) / (1. / (opts.N - 1.)) * (u_W + u_E + u_S + u_N - 4 * u_C);
+    }
+  }
+
+  //const auto diff = sub(b_h, b_h_ref);
 
   // stop clock and calculate duration
   const auto end = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
+  write(u_h_out, opts.N, opts.N, opts.N * (slice - 1), "results_" + std::to_string(coords[0]));// + "-" + std::to_string(coords[1]));
+
   // print runtime and exit
-  std::cout << "Rank " << rank << ":   2-norm: " << norm_2(solution[1]) << '\n';
-  std::cout << "Rank " << rank << ": inf-norm: " << norm_inf(solution[1]) << '\n';
+  //std::cout << "Rank " << rank << ":   2-norm: " << norm_2(sub(b_h, b_h_ref)) << '\n';
+  //std::cout << "Rank " << rank << ": inf-norm: " << norm_inf(sub(b_h, b_h_ref)) << '\n';
   std::cout << "Rank " << rank << ": Runtime: " << duration.count() << " microseconds" << std::endl;
+
   // call the MPI final cleanup routine
   MPI_Finalize();
 

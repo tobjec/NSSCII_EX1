@@ -1,5 +1,5 @@
 jacobi.o: main.cpp
-	mpic++ -std=c++17 -O3 -march=native jacobi.cpp -o jacobi.o
+	mpic++ -std=c++20 -O3 -march=native jacobi.cpp -o jacobi.o #-fsanitize=address
 
 .PHONY: load clean run plot
 load:
@@ -14,10 +14,12 @@ run:
 # see also https://stackoverflow.com/questions/6273608/how-to-pass-argument-to-makefile-from-command-line
 
 plot:
+	cat results*.csv > result.csv
 	python3 plot.py
 
 clean:
 	rm -f jacobi.o
-	rm -f result*.csv
+	rm -f *.csv
+	rm -f *.png
 
 
