@@ -11,8 +11,13 @@
 #include <tuple>
 #include <vector>
 #include <chrono>
+#include <algorithm>
+#include <array>
+#include <sstream>
 
-using namespace std::chrono;
+#include <mpi.h>
+
+//using namespace std::chrono;
 
 namespace program_options {
 
@@ -70,40 +75,6 @@ auto parse(int argc, char *argv[]) {
 }
 
 } // namespace program_options
-
-struct Index_2D
-{
-  constexpr Index_2D(std::size_t N) : N{N}, h{1. / (N - 1.)} {}
-  constexpr std::size_t operator()(std::size_t i, std::size_t j) const { return j * N + i; }
-  constexpr double x(std::size_t i) const { return i * h; }
-  constexpr double y(std::size_t j) const { return j * h; }
-  const std::size_t N;
-  const double h;
-};
-
-void gaussian_source_region(const double source_x, const double source_y, const double source_sigma, std::vector<double>& b_h, const Index_2D i2d) {
-  for (auto i = 0; i < i2d.N; ++i) {
-    for (auto j = 0; j < i2d.N; ++j) {
-      const auto x_diff = i2d.x(i) - source_x, y_diff = i2d.y(j) - source_y;
-      b_h[i2d(i, j)] = 1 / (2 * M_PI * source_sigma * source_sigma) * std::exp(-(x_diff * x_diff + y_diff * y_diff / 2 / source_sigma / source_sigma));
-    }
-  }
-}
-
-void jacobi_iterate(const std::vector<double>& u_h, std::vector<double>& u_h_next, const std::vector<double>& b_h, const Index_2D i2d, double fixed_west, double fixed_east) {
-  for (auto i = 0; i < i2d.N; ++i) {
-    for (auto j = 0; j < i2d.N; ++j) {
-      const auto u_C =                 u_h[i2d(i    , j    )];
-      const auto u_W = i > 0         ? u_h[i2d(i - 1, j    )] : fixed_west;
-      const auto u_E = i < i2d.N - 1 ? u_h[i2d(i + 1, j    )] : fixed_east;
-      const auto u_S = j > 0         ? u_h[i2d(i    , j - 1)] : u_C;
-      const auto u_N = j < i2d.N - 1 ? u_h[i2d(i    , j + 1)] : u_C;
-
-      u_h_next[i2d(i, j)] = i2d.h * i2d.h / 4. * (b_h[i2d(i, j)] + 1. / i2d.h / i2d.h * (u_W + u_E + u_S + u_N));
-    }
-  }
-}
-
 double norm_2(const std::vector<double>& v) {
   auto sum = 0.;
   for (auto x : v) {
@@ -131,84 +102,146 @@ std::vector<double> sub(const std::vector<double>& a, const std::vector<double>&
   return result;
 }
 
-// compute A_h * u_h = b_h with A_h given implicitly by the stencil and boundary conditions
-void recompute(const std::vector<double>& u_h, std::vector<double>& b_h, const Index_2D i2d, double fixed_west, double fixed_east) {
-  for (auto i = 0; i < i2d.N; ++i) {
-    for (auto j = 0; j < i2d.N; ++j) {
-      const auto u_C =                 u_h[i2d(i    , j    )];
-      const auto u_W = i > 0         ? u_h[i2d(i - 1, j    )] : fixed_west;
-      const auto u_E = i < i2d.N - 1 ? u_h[i2d(i + 1, j    )] : fixed_east;
-      const auto u_S = j > 0         ? u_h[i2d(i    , j - 1)] : u_C;
-      const auto u_N = j < i2d.N - 1 ? u_h[i2d(i    , j + 1)] : u_C;
-
-      b_h[i2d(i, j)] = -1. / i2d.h / i2d.h * (u_W + u_E + u_S + u_N - 4 * u_C);
-    }
+auto write(const std::vector<double>& u_h_out, size_t& N, size_t start, size_t end, std::string name) {
+  std::ofstream csv;
+  csv.open(name + ".csv");
+  for (size_t i = start; i < end; ++i) {
+    if (i != start && i % N == 0) csv << "\n";
+    csv << std::format("{:08.4f}", u_h_out[i]);
+    if (i % N != N-1) csv << " ";
   }
+  csv << "\n";
+  csv.close();
 }
 
-// solve A_h * u_h = b_h with A_h given implicitly by the stencil and boundary conditions
-void solve(std::vector<double>& u_h_in, std::vector<double>& u_h_out, const std::vector<double>& b_h, double fix_west, double fix_east, const Index_2D i2d, std::size_t iters) {
+int main(int argc, char *argv[]) try {
+  // first thing to do in an MPI program
+  MPI_Init(&argc, &argv);
+  // obtain own global rank
+  int rank;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+  // obtain number of global MPI processes
+  int processes;
+  MPI_Comm_size(MPI_COMM_WORLD, &processes);
+
+  // letting MPI find a proper select of the dimensions (obsolete for one-dimension)
+  constexpr int n = 1; // dimensions
+  std::vector<int> dims(n);
+  std::fill(dims.begin(), dims.end(), 0);
+  MPI_Dims_create(processes, n, std::data(dims));
+
+  // create a communicator for a Nth D topology (with potential reordering of ranks)
+  MPI_Comm comm;
+  std::vector<int> periodic(n);
+  std::fill(periodic.begin(), periodic.end(), false);
+  MPI_Cart_create(MPI_COMM_WORLD, n, std::data(dims), std::data(periodic), true, &comm);
+
+  // obtain and store neighboring ranks in the 2D topology (left/right)
+  constexpr int displ = 1;
+  enum Direction : int { LEFT = 0, RIGHT = 1, TOP = 2, BOTTOM = 3 };
+  std::vector<int> neighbours(n*2);
+  std::fill(neighbours.begin(), neighbours.end(), MPI_PROC_NULL);
+  MPI_Cart_shift(comm, 0, displ, &neighbours[TOP], &neighbours[BOTTOM]);
+  //MPI_Cart_shift(comm, 1, displ, &neighbours[LEFT], &neighbours[RIGHT]);
+  
+  // obtain own coordinates
+  std::vector<int> coords(n);
+  std::fill(coords.begin(), coords.end(), -1);
+  MPI_Cart_coords(comm, rank, n, std::data(coords));
+
+  // parse cmd options
+  auto opts = program_options::parse(argc, argv);
+
+  // start clock
+  const auto start = std::chrono::high_resolution_clock::now();
+
+  // HORIZONTAL DECOMPOSITION
+  // lets ignore floats for now. thus grid size divided by number of MPI processes must be an integer
+  size_t slice = opts.N / processes + 2; // +2 for ghost layers
+
+
+  const auto grid_size = opts.N * slice;
+  std::vector<double> u_h_in(grid_size), u_h_out(grid_size), b_h(grid_size), b_h_ref(grid_size);
+
+  std::fill(b_h.begin(), b_h.end(), 0.);
+
+  //BEGIN solve section
   // use zero-vector as initial solution
   std::fill(u_h_in.begin(), u_h_in.end(), 0.);
 
-  for (auto iter = 0; iter < iters; ++iter) {
-    jacobi_iterate(u_h_in, u_h_out, b_h, i2d, fix_west, fix_east);
+  // register MPI data types (here vectors) to send a row or a column
+  MPI_Datatype row;
+  MPI_Type_vector(opts.N, 1, 1, MPI_DOUBLE, &row);
+  MPI_Type_commit(&row);
+  MPI_Datatype col;
+  MPI_Type_vector(opts.N, 1, opts.N, MPI_DOUBLE, &col);
+  MPI_Type_commit(&col);
+  
+  // send own middle column to both neighbors
+  // recieve a column from left/right neighbor and store as right/left column
+  enum Request : int { TOP_SEND = 0, BOTTOM_SEND = 1, TOP_RECV = 2, BOTTOM_RECV = 3 };//, LEFT_SEND = 4, LEFT_RECV = 5, RIGHT_SEND = 6, RIGHT_RECV = 7 };
+  enum Tag : int { TOP_tag = 0, BOTTOM_tag = 1 };//, LEFT_tag = 2, RIGHT_tag = 3 };
+  std::vector<MPI_Request> req(n * 2 * 2);
+  //std::fill(req.begin(), req.end(), MPI_REQUEST_NULL);
+
+  // Jacobi iteration
+  for (auto iter = 0; iter < opts.iters; ++iter) {
+    //for (auto i = coords[1] * vertical_size; i < (coords[1] + 1) * vertical_size; ++i) {
+    for (auto i = 0; i < opts.N; ++i) {
+      for (auto j = 0; j < slice; ++j) { // first and last row are ghost layers
+        const auto u_C =                  u_h_in[j       * opts.N + i      ];
+        const auto u_W = i > 0          ? u_h_in[j       * opts.N + (i - 1)] : opts.fix_west;
+        const auto u_E = i < opts.N - 1 ? u_h_in[j       * opts.N + (i + 1)] : opts.fix_east;
+        const auto u_S = j > 0          ? u_h_in[(j - 1) * opts.N + i      ] : coords[0] == 0             ? u_C : u_h_in[(j - 1) * opts.N + i];
+        const auto u_N = j < slice - 1  ? u_h_in[(j + 1) * opts.N + i      ] : coords[0] == processes - 1 ? u_C : u_h_in[(j + 1) * opts.N + i];
+        u_h_out[j * opts.N + i] = (1. / (opts.N - 1.)) * (1. / (opts.N - 1.)) / 4. * (b_h[j * opts.N + i] + 1. / (1. / (opts.N - 1.)) / (1. / (opts.N - 1.)) * (u_W + u_E + u_S + u_N));
+      }
+
+      MPI_Isend(&u_h_out[opts.N], 1, row, neighbours[TOP], TOP_tag, comm, &req[TOP_SEND]);
+      MPI_Isend(&u_h_out[opts.N*(slice-2)], 1, row, neighbours[BOTTOM], BOTTOM_tag, comm, &req[BOTTOM_SEND]);
+      MPI_Irecv(&u_h_out[opts.N*(slice-1)], 1, row, neighbours[BOTTOM], TOP_tag,    comm, &req[TOP_RECV]);
+      MPI_Irecv(&u_h_out[0],    1, row, neighbours[TOP],    BOTTOM_tag, comm, &req[BOTTOM_RECV]);
+
+      // wait/block for/until all four communication calls to finish
+      MPI_Waitall(n * 2 * 2, std::data(req), MPI_STATUSES_IGNORE);
+    }
 
     // The next iteration's input is the current iteration's output
     std::swap(u_h_in, u_h_out);
   }
-}
+  //END solve section
 
-auto run(program_options::Options opt) {
-  const auto i2d = Index_2D{opt.N};
+  // Recompute
+  // compute A_h * u_h = b_h with A_h given implicitly by the stencil and boundary conditions
+  //for (auto i = coords[1] * vertical_size; i < (coords[1] + 1) * vertical_size; ++i) {
+  for (auto i = 0; i < opts.N; ++i) {
+    for (auto j = 0; j < slice; ++j) { // first and last row are ghost layers
+      const auto u_C =                  u_h_out[j       * opts.N + i      ];
+      const auto u_W = i > 0          ? u_h_out[j       * opts.N + (i - 1)] : opts.fix_west;
+      const auto u_E = i < opts.N - 1 ? u_h_out[j       * opts.N + (i + 1)] : opts.fix_east;
+      const auto u_S = j > 0          ? u_h_out[(j - 1) * opts.N + i      ] : coords[0] == 0             ? u_C : u_h_out[(j - 1) * opts.N + i];
+      const auto u_N = j < slice - 1  ? u_h_out[(j + 1) * opts.N + i      ] : coords[0] == processes - 1 ? u_C : u_h_out[(j + 1) * opts.N + i];
 
-  const auto grid_size = i2d.N * i2d.N;
-  std::vector<double> u_h_in(grid_size), u_h_out(grid_size), b_h(grid_size);
-
-  if (opt.has_source)
-    gaussian_source_region(opt.source_x, opt.source_y, opt.source_sigma, b_h, i2d);
-  else
-    std::fill(b_h.begin(), b_h.end(), 0.);
-
-  solve(u_h_in, u_h_out, b_h, opt.fix_west, opt.fix_east, i2d, opt.iters);
-
-  std::vector<double> b_h_ref(grid_size);
-  recompute(u_h_out, b_h_ref, i2d, opt.fix_west, opt.fix_east);
-
-  const auto diff = sub(b_h, b_h_ref);
-
-  std::cout << "  2-norm: " << norm_2(diff) << '\n';
-  std::cout << "inf-norm: " << norm_inf(diff) << '\n';
-
-  return u_h_out;
-}
-
-int main(int argc, char *argv[]) try {
-  const auto start = std::chrono::high_resolution_clock::now();
-  auto opts = program_options::parse(argc, argv);
-
-  opts.print();
-
-  // write csv
-  auto write = [ N = opts.N, name = opts.name ](const auto &x) -> auto {
-    std::ofstream csv;
-    csv.open(name + ".csv");
-    for (size_t j = 0; j < N; ++j) {
-      for (size_t i = 0; i < N - 1; ++i) {
-        csv << x[i + j * N] << " ";
-      }
-      csv << x[(N - 1) + j * N];
-      csv << "\n";
+      b_h_ref[j * opts.N + i] = -1. / (1. / (opts.N - 1.)) / (1. / (opts.N - 1.)) * (u_W + u_E + u_S + u_N - 4 * u_C);
     }
-    csv.close();
-  };
+  }
 
-  const auto solution = run(opts);
-  write(solution);
+  //const auto diff = sub(b_h, b_h_ref);
+
+  // stop clock and calculate duration
   const auto end = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
-  std::cout << "Runtime: " << duration.count() << " microseconds" << std::endl;
+  write(u_h_out, opts.N, opts.N, opts.N * (slice - 1), "results_" + std::to_string(coords[0]));// + "-" + std::to_string(coords[1]));
+
+  // print runtime and exit
+  //std::cout << "Rank " << rank << ":   2-norm: " << norm_2(sub(b_h, b_h_ref)) << '\n';
+  //std::cout << "Rank " << rank << ": inf-norm: " << norm_inf(sub(b_h, b_h_ref)) << '\n';
+  std::cout << "Rank " << rank << ": Runtime: " << duration.count() << " microseconds" << std::endl;
+
+  // call the MPI final cleanup routine
+  MPI_Finalize();
 
   return EXIT_SUCCESS;
 } catch (std::exception &e) {

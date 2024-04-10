@@ -12,4 +12,4 @@ def plot_and_save(filename):
     fig.savefig(filename + ".png")
     plt.show()
 
-plot_and_save("benchmark1.csv")
+plot_and_save("result.csv")
