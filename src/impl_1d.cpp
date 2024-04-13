@@ -300,6 +300,9 @@ int main(int argc, char** argv) {
       return max;
     };
 
+    // start clock
+    const auto start = std::chrono::high_resolution_clock::now();
+
     // initialize x1 and x2
     auto x1 = init();
     auto x2 = x1;
@@ -360,10 +363,16 @@ int main(int argc, char** argv) {
       residual = gather_all_parts(x2);
     }
     
+    // stop clock and calculate duration
+    const auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+
+
     if (rk == 0) {
       write(solution);
       std::cout << "  norm2 = " << norm2(residual) << std::endl;
       std::cout << "normInf = " << normInf(residual) << std::endl;
+      std::cout << "Runtime: " << duration.count() << " microseconds" << std::endl;
     }
 
     MPI_Comm_free(&comm);

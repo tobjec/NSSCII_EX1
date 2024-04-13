@@ -1,9 +1,18 @@
-jacobi.o: main.cpp
+build2d:
+	mpic++ -std=c++20 -O3 -march=native impl_2d.cpp -o impl2d.o #-fsanitize=address
+
+build1d:
+	mpic++ -std=c++20 -O3 -march=native impl_1d.cpp -o impl1d.o #-fsanitize=address
+
+build:
 	mpic++ -std=c++20 -O3 -march=native jacobi.cpp -o jacobi.o #-fsanitize=address
 
 .PHONY: load clean run plot
 load:
 	source /etc/profile.d/modules.sh && module load mpi/openmpi-x86_64
+
+run2d:
+	mpirun -n $(filter-out $@,$(MAKECMDGOALS)) ./impl2d.o 2D result 80 10000 -100 100
 
 run:
 	mpirun -n $(filter-out $@,$(MAKECMDGOALS)) ./jacobi.o result 80 10000 -100 100

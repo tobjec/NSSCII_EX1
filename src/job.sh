@@ -2,7 +2,7 @@
 
 ## job name
 
-#SBATCH --job-name=benchmark1
+#SBATCH --job-name=cpu01
 
 ## logfiles (stdout/stderr) %x=job-name %j=job-id
 
@@ -13,24 +13,28 @@
 
 #SBATCH --partition=nssc    # partition for 360.242 and 360.242
 #SBATCH --nodes=1           # number of nodes
-#SBATCH --ntasks=1          # number of processes
+#SBATCH --ntasks=4          # number of tasks
 #SBATCH --cpus-per-task=1   # number of cpus per process
-#SBATCH --time=00:01:00     # set time limit to 1 minute
+#SBATCH --time=00:10:00     # set time limit to 1 minute
 
 ## load modules and compilation (still on the login node)
 
 module load pmi/pmix-x86_64     # [P]rocess [M]anagement [I]nterface (required by MPI-Implementation)
 module load mpi/openmpi-x86_64  # MPI implementation (including compiler-wrappers mpicc/mpic++)
 
-mpic++ -std=c++17 -O3 -Wall -pedantic -march=native -ffast-math main.cpp -o solverMPI
+mpic++ -std=c++17 -O3 -pedantic -march=native -ffast-math impl_1d.cpp -o impl_1d
 
 ## submitting jobs (on the allocated resources)
 
 # job: run the mpi-enabled executable passing command line arguments
 
-mpi_mode=1
+mpi_mode=1D
 filename=benchmark1
-resolution=32
+resolutions=(125 250 1000 2000)
 iterations=800
 
-srun --mpi=pmix ./solverMPI ${filename} ${mpi_mode} ${resolution} ${iterations} -100 +100
+for resolution in "${resolutions[@]}"
+do
+  srun --mpi=pmix ./impl_1d ${mpi_mode} ${filename}_res${resolution} ${resolution} ${iterations} -100 +100
+done
+

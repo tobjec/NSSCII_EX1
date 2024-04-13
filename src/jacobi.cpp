@@ -169,6 +169,10 @@ int main(int argc, char *argv[]) try {
   //BEGIN solve section
   // use zero-vector as initial solution
   std::fill(u_h_in.begin(), u_h_in.end(), 0.);
+  //for (auto i=0;i<opts.N*opts.N;i+=opts.N) u_h_in[i] = opts.fix_west;
+  //for (auto i=opts.N-1;i<opts.N*opts.N;i+=opts.N) u_h_in[i] = opts.fix_east;
+  //for (auto i=0;i<opts.N*opts.N;i+=opts.N) u_h_out[i] = opts.fix_west;
+  //for (auto i=opts.N-1;i<opts.N*opts.N;i+=opts.N) u_h_out[i] = opts.fix_east;
 
   // register MPI data types (here vectors) to send a row or a column
   MPI_Datatype row;
@@ -202,7 +206,7 @@ int main(int argc, char *argv[]) try {
       MPI_Isend(&u_h_out[opts.N*(slice-2)], 1, row, neighbours[BOTTOM], BOTTOM_tag, comm, &req[BOTTOM_SEND]);
       MPI_Irecv(&u_h_out[opts.N*(slice-1)], 1, row, neighbours[BOTTOM], TOP_tag,    comm, &req[TOP_RECV]);
       MPI_Irecv(&u_h_out[0],    1, row, neighbours[TOP],    BOTTOM_tag, comm, &req[BOTTOM_RECV]);
-
+      
       // wait/block for/until all four communication calls to finish
       MPI_Waitall(n * 2 * 2, std::data(req), MPI_STATUSES_IGNORE);
     }
@@ -236,8 +240,8 @@ int main(int argc, char *argv[]) try {
   write(u_h_out, opts.N, opts.N, opts.N * (slice - 1), "results_" + std::to_string(coords[0]));// + "-" + std::to_string(coords[1]));
 
   // print runtime and exit
-  //std::cout << "Rank " << rank << ":   2-norm: " << norm_2(sub(b_h, b_h_ref)) << '\n';
-  //std::cout << "Rank " << rank << ": inf-norm: " << norm_inf(sub(b_h, b_h_ref)) << '\n';
+  std::cout << "Rank " << rank << ":   2-norm: " << norm_2(sub(b_h, b_h_ref)) << '\n';
+  std::cout << "Rank " << rank << ": inf-norm: " << norm_inf(sub(b_h, b_h_ref)) << '\n';
   std::cout << "Rank " << rank << ": Runtime: " << duration.count() << " microseconds" << std::endl;
 
   // call the MPI final cleanup routine
