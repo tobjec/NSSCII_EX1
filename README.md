@@ -4,6 +4,10 @@ First group homework of the lecture 360.243 Numerical Simulation and Scientific 
 Link to LaTeX template for task reports:
 https://www.overleaf.com/6217539947gjpfdrqgnncz#a5cfc3
 
+Link to Report Task 1:
+https://www.overleaf.com/2748136314bxncrfzkhvff#a6b858
+
+
 Lecture notes:
 
 * first do 1D decomposition and only after working example implement 2D decomposition
