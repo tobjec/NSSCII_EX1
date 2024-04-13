@@ -70,6 +70,9 @@ int main(int argc, char** argv) {
     int size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // special behaviour for one process
+    bool flag_one_process = (size == 1);
+
     // one dimension
     constexpr int n = 1;
 
@@ -112,6 +115,9 @@ int main(int argc, char** argv) {
     else if (rk == size-1) height = (int)(opts.N/size) + 1;
     else height = (int)(opts.N/size) + 2;
     /* divide the segment evenly among all processors; spill over is assigned to rank 0; +2/+1 because of two/one ghost layer*/
+    // special behaviour in case of one process
+    if (flag_one_process) height = opts.N;
+
 
     // initial guess (0.0) with fixed values in west and east
     auto init = [N = opts.N, W = opts.fix_west, E = opts.fix_east, height]() -> auto {
@@ -127,7 +133,56 @@ int main(int argc, char** argv) {
         return res;
     };
 
-    
+    // solver update for only one process
+    auto jacobi_iter_one_process = [N = opts.N](const auto &xold, auto &xnew,
+                                    bool residual = false) {
+        auto h = 1.0 / (N - 1);
+        auto h2 = h * h;
+        // all interior points
+        for (size_t j = 1; j < N - 1; ++j) {
+        for (size_t i = 1; i < N - 1; ++i) {
+            auto w = xold[(i - 1) + (j)*N];
+            auto e = xold[(i + 1) + (j)*N];
+            auto n = xold[(i) + (j + 1) * N];
+            auto s = xold[(i) + (j - 1) * N];
+            auto c = xold[(i) + (j)*N];
+            if (!residual)
+            xnew[i + j * N] = (- (-1.0 / h2) * (w + e + n + s)) * h2 / 4.0;
+            else
+            xnew[i + j * N] = (-1.0 / h2) * (w + e + n + s - 4.0 * c);
+        }
+        }
+        // isolating south boundary
+        {
+        size_t j = 0;
+        for (size_t i = 1; i < N - 1; ++i) {
+            auto w = xold[(i - 1) + (j)*N];
+            auto e = xold[(i + 1) + (j)*N];
+            auto n = xold[(i) + (j + 1) * N];
+            auto s = n;
+            auto c = xold[(i) + (j)*N];
+            if (!residual)
+            xnew[i + j * N] = (- (-1.0 / h2) * (w + e + n + s)) * h2 / 4.0;
+            else
+            xnew[i + j * N] = (-1.0 / h2) * (w + e + n + s - 4 * c);
+        }
+        }
+        // isolating north boundary
+        {
+        size_t j = N - 1;
+        for (size_t i = 1; i < N - 1; ++i) {
+            auto w = xold[(i - 1) + (j)*N];
+            auto e = xold[(i + 1) + (j)*N];
+            auto s = xold[(i) + (j - 1) * N];
+            auto n = s;
+            auto c = xold[(i) + (j)*N];
+            if (!residual)
+            xnew[i + j * N] = (- (-1.0 / h2) * (w + e + n + s)) * h2 / 4.0;
+            else
+            xnew[i + j * N] = (-1.0 / h2) * (w + e + n + s - 4 * c);
+        }
+        }
+    };
 
     // solver update
     auto jacobi_iter = [N = opts.N, height, rk, size](const auto &xold, auto &xnew,
@@ -211,20 +266,6 @@ int main(int argc, char** argv) {
         }
     };
 
-    /*
-    auto print_vec = [N = opts.N, height, size, rk](const auto& vec, int rank=0) {
-    if (rk == rank) {
-      std::cout << "rk="<< rk << "\n";
-      for (int j=0; j<height; j++) {
-          for (int i=0; i<(N-1); i++) {
-              std::cout << vec[i + N*j] << "\t";
-          }
-          std::cout << vec[(N-1) + N*j] << "\n";
-      }
-        std::cout << std::endl;
-    }
-    };
-    */
 
     // write vector to csv
     auto write = [N = opts.N, name = opts.name](const auto &x) -> auto {
@@ -267,7 +308,8 @@ int main(int argc, char** argv) {
     enum Request : int { Bottom_SEND = 0, Top_SEND = 1, Bottom_RECV = 2, Top_RECV = 3 };
     enum Tag : int { Bottom_Msg = 0, Top_Msg = 1 };
     for (size_t iter = 0; iter <= opts.iters; ++iter) {
-      jacobi_iter(x1, x2);
+      if (flag_one_process) jacobi_iter_one_process(x1, x2);
+      else jacobi_iter(x1, x2);
       std::swap(x1, x2);
 
       // send ghost layer
@@ -283,7 +325,8 @@ int main(int argc, char** argv) {
     }
 
     // calculating residual in x2
-    jacobi_iter(x1, x2, true);
+    if (flag_one_process) jacobi_iter_one_process(x1, x2, true);
+    else jacobi_iter(x1, x2, true);
 
     // use MPI_Gather to collect all partial results
     auto gather_all_parts = [N = opts.N, rk, size, height, comm, row](const auto& vec) -> auto {
@@ -304,9 +347,18 @@ int main(int argc, char** argv) {
       return recvbuf;
     };
 
-    // perform gather for solution and residual
-    auto solution = gather_all_parts(x1);
-    auto residual = gather_all_parts(x2);
+    std::vector<double> solution;
+    std::vector<double> residual;
+
+    if (flag_one_process) {
+      solution = x1;
+      residual = x2;
+    }
+    else {
+      // perform gather for solution and residual
+      solution = gather_all_parts(x1);
+      residual = gather_all_parts(x2);
+    }
     
     if (rk == 0) {
       write(solution);
