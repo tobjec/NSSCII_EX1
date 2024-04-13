@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build and run current file",
+            "type": "shell",
+            "command": "clear && mpic++ -fopenmp -std=c++17 ${file} -O2 -o ${fileBasenameNoExtension} && mpirun -np 7 ./${fileBasenameNoExtension} 2D benchmark1 250 1000 0.0 1.0",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc"
+        }
+    ]
+}
