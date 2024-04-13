@@ -27,7 +27,7 @@ plot:
 	python3 plot.py
 
 clean:
-	rm -f jacobi.o
+	rm -f *.o
 	rm -f *.csv
 	rm -f *.png
 
