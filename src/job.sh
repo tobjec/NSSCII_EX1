@@ -22,14 +22,14 @@
 module load pmi/pmix-x86_64     # [P]rocess [M]anagement [I]nterface (required by MPI-Implementation)
 module load mpi/openmpi-x86_64  # MPI implementation (including compiler-wrappers mpicc/mpic++)
 
-mpic++ -std=c++17 -O3 -pedantic -march=native -ffast-math impl_1d.cpp -o impl_1d
+mpic++ -std=c++20 -O3 -pedantic -march=native -ffast-math impl_1d.cpp -o impl_1d
 
 ## submitting jobs (on the allocated resources)
 
 # job: run the mpi-enabled executable passing command line arguments
 
 mpi_mode=1D
-filename=benchmark1
+filename=cpu01
 resolutions=(125 250 1000 2000)
 iterations=800
 
