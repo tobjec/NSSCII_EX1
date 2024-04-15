@@ -1,0 +1,12 @@
+  norm2 = 143934
+normInf = 1855.8
+Runtime: 2995 microseconds
+  norm2 = 821814
+normInf = 7483.27
+Runtime: 4624 microseconds
+  norm2 = 2.64567e+07
+normInf = 120455
+Runtime: 34522 microseconds
+  norm2 = 1.49812e+08
+normInf = 482301
+Runtime: 173645 microseconds
