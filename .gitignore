@@ -1,4 +1,4 @@
 # exclude compiled outputs
 *.o
-*.png
-*.csv
+src/*.png
+src/*.csv
