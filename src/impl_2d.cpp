@@ -372,6 +372,9 @@ int main(int argc, char** argv) {
             }
         }
     };
+    
+    // start clock
+    const auto start = std::chrono::high_resolution_clock::now();
 
     // initialize x1 and x2
     auto x1 = init();
@@ -517,12 +520,17 @@ int main(int argc, char** argv) {
             residual = transpose(residual, opts.N, opts.N);
         }
     }
+
+    // stop clock and calculate duration
+    const auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
     // write solution to file and print norms to console
     if (rk == 0) {
       write(solution);
       std::cout << "  norm2 = " << norm2(residual) << std::endl;
       std::cout << "normInf = " << normInf(residual) << std::endl;
+      std::cout << "Runtime: " << duration.count() << " microseconds" << std::endl;
     }
     
 
